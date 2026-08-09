@@ -62,14 +62,11 @@ jobs:
         echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
         echo "::endgroup::"
 
-    # You might want to Checkout your repo first, but not mandatory
     - name: Check Out
       uses: actions/checkout@v4
 
-    # Cleanup The Actions Workspace Using Custom Composite Run Actions
     - name: Cleanup
       uses: rokibhasansagar/slimhub_actions@main
-      # That's it! Now use your normal steps
 
     - name: Prepare the environment
       run: |
@@ -81,6 +78,12 @@ jobs:
             xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev \
             libwxgtk3.0-gtk3-dev libxml2 lzop pngcrush schedtool squashfs-tools \
             imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libncurses5 python3 tar
+
+    # 新增:老分支的预编译 host 工具经常依赖这些新系统已移除/替换的旧版共享库
+    - name: Install legacy compatibility libraries
+      run: |
+        sudo apt install -y libtinfo5 libncurses5 lib32stdc++6 lib32z1 bison flex unzip rsync openssl libssl-dev || true
+      continue-on-error: true
 
     - name: Install OpenJDK
       uses: actions/setup-java@v4
@@ -144,13 +147,33 @@ jobs:
       with:
         swap-size-gb: 12
 
-    - name: Switch to Python2
+    # 修改:原来的 python2 安装在 ubuntu-22.04 上必定失败(仓库已无该包)
+    # 改为优先尝试装 python2,装不到就让 `python` 命令回退指向 python3
+    # 避免后续脚本因为找不到 `python` 命令而直接失败
+    - name: Ensure `python` command is available
       run: |
-        sudo apt -y install python
-        sudo rm -rf /usr/bin/python
-        sudo ln -s /usr/bin/python2 /usr/bin/python
-        # sudo ln -s /usr/bin/python3 /usr/bin/python3
+        sudo apt -y install python2 || true
+        if command -v python2 >/dev/null 2>&1; then
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
+          echo "python -> python2"
+        else
+          sudo ln -sf /usr/bin/python3 /usr/bin/python
+          echo "python2 unavailable, python -> python3 instead"
+        fi
       continue-on-error: true
+
+    - name: Fix Python2 syntax in build scripts
+      run: |
+        sudo apt install -y 2to3
+        2to3 -w -n build/tools/check_radio_versions.py || true
+        find build/tools vendor -maxdepth 3 -name "*.py" -exec 2to3 -w -n {} \; 2>/dev/null || true
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      continue-on-error: true
+
+    # 新增:构建前打印磁盘空间,方便万一报 "No space left on device" 时直接看日志定位
+    - name: Show disk space before build
+      run: df -h
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Building recovery
       run: |
